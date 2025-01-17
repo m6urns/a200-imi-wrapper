@@ -292,55 +292,68 @@ class ImiCamera:
             try:
                 print("Attempting to start UVC color stream...")
                 
-                # Get the current frame mode
-                mode_ptr = self.cam_lib.imiCamGetCurrentFrameMode(self.color_device)
-                if mode_ptr:
-                    print(f"Got current frame mode: {mode_ptr.contents.resolutionX}x{mode_ptr.contents.resolutionY} "
-                        f"@ {mode_ptr.contents.fps}fps format={mode_ptr.contents.pixelFormat}")
+                # Query supported frame modes first
+                modes_ptr = POINTER(ImiCameraFrameMode)()
+                num_modes = c_uint32()
+                ret = self.cam_lib.imiCamGetSupportFrameModes(self.color_device, 
+                                                            byref(modes_ptr), 
+                                                            byref(num_modes))
+                if ret != self.IMI_SUCCESS:
+                    raise RuntimeError(f"Failed to query supported modes: {ret}")
                     
-                    # Start stream with current mode
-                    ret = self.cam_lib.imiCamStartStream(self.color_device, mode_ptr)
-                    if ret == self.IMI_SUCCESS:
-                        self.streams[StreamType.COLOR] = self.color_device
-                        self.is_uvc_color = True
-                        print("Successfully opened UVC color stream")
-                        return
-                    else:
-                        print(f"Failed to start stream with current mode, error: {ret}")
-                        try:
-                            error_str = self.lib.imiGetErrorString(ret)
-                            print(f"Error description: {error_str}")
-                        except Exception:
-                            pass
-                else:
-                    print("Failed to get current frame mode")
+                print(f"Found {num_modes.value} supported modes:")
+                
+                # Choose a supported mode - prefer 640x480 RGB888 @ 30fps
+                selected_mode = None
+                for i in range(num_modes.value):
+                    mode = modes_ptr[i]
+                    print(f"Mode {i}: {mode.resolutionX}x{mode.resolutionY} @ {mode.fps}fps "
+                        f"format={mode.pixelFormat}")
+                        
+                    if (mode.resolutionX == 640 and mode.resolutionY == 480 and
+                        mode.fps == 30 and mode.pixelFormat == 0):  # RGB888
+                        selected_mode = mode
+                        break
+                        
+                if not selected_mode:
+                    # Fall back to first available mode
+                    selected_mode = modes_ptr[0]
+                    
+                print(f"Selected mode: {selected_mode.resolutionX}x{selected_mode.resolutionY} "
+                    f"@ {selected_mode.fps}fps")
+                    
+                # Start stream with selected mode
+                ret = self.cam_lib.imiCamStartStream(self.color_device, byref(selected_mode))
+                if ret != self.IMI_SUCCESS:
+                    raise RuntimeError(f"Failed to start stream with selected mode: {ret}")
+                    
+                print("Successfully started UVC color stream")
+                self.streams[StreamType.COLOR] = self.color_device
+                self.is_uvc_color = True
+                
+                # Store the selected mode for later use
+                self._uvc_mode = selected_mode
+                return
 
             except Exception as e:
-                print(f"Exception during UVC stream initialization: {str(e)}")
+                print(f"Failed to initialize UVC color stream: {str(e)}")
+                print("Falling back to regular color stream...")
 
         # Fallback to regular color stream
-        print("\nAttempting to open regular color stream...")
         try:
             stream_ptr = c_void_p()
             ret = self.lib.imiOpenStream(self.device, StreamType.COLOR.value, None, None, 
                                     byref(stream_ptr))
-            
             if ret == self.IMI_SUCCESS:
                 self.streams[StreamType.COLOR] = stream_ptr
                 self.is_uvc_color = False
                 print("Successfully opened regular color stream")
                 return
-            else:
-                print(f"Failed to open regular color stream. Error code: {ret}")
-                try:
-                    error_str = self.lib.imiGetErrorString(ret)
-                    print(f"Error description: {error_str}")
-                except Exception:
-                    pass
                 
-            raise RuntimeError(f"Failed to open color stream (error code: {ret})")
+            raise RuntimeError(f"Failed to open color stream: {ret}")
         except Exception as e:
             raise RuntimeError(f"Failed to open COLOR stream: {str(e)}")
+
         
     def _open_regular_stream(self, stream_type: StreamType):
         """Open a non-color stream (depth/IR)"""
@@ -378,46 +391,42 @@ class ImiCamera:
 
     def _get_uvc_color_frame(self, timeout_ms: int) -> Optional[ColorFrame]:
         """Get frame from UVC color camera with enhanced error handling"""
-        if not self.color_device:
+        if not self.color_device or not hasattr(self, '_uvc_mode'):
             return None
-            
+                
         frame_ptr = POINTER(ImiCameraFrame)()
         try:
             ret = self.cam_lib.imiCamReadNextFrame(self.color_device, byref(frame_ptr), timeout_ms)
-            
+                
             if ret != self.IMI_SUCCESS or not frame_ptr:
                 if ret != self.IMI_SUCCESS:
                     print(f"Failed to read frame, error: {ret}")
                 return None
-                
+                    
             if not frame_ptr.contents:
                 print("Null frame contents")
                 return None
-                
-            width = frame_ptr.contents.width
-            height = frame_ptr.contents.height
-            size = frame_ptr.contents.size
-            
-            if width <= 0 or height <= 0 or size <= 0:
-                print(f"Invalid frame dimensions: {width}x{height}, size={size}")
+                    
+            # Use the stored mode information to validate frame
+            width = self._uvc_mode.resolutionX
+            height = self._uvc_mode.resolutionY
+            expected_size = width * height * 3  # RGB888 format
+                    
+            if frame_ptr.contents.size != expected_size:
+                print(f"Unexpected frame size. Expected {expected_size}, got {frame_ptr.contents.size}")
                 return None
-                
-            expected_size = width * height * 3  # RGB format
-            if size != expected_size:
-                print(f"Unexpected frame size. Expected {expected_size}, got {size}")
-                return None
-                
+                    
             # Create numpy array from RGB data
             try:
                 data = np.ctypeslib.as_array(frame_ptr.contents.pData, 
-                                        shape=(height, width, 3)).copy()
+                                            shape=(height, width, 3)).copy()
                 return ColorFrame(data, 
                                 frame_ptr.contents.timeStamp,
                                 frame_ptr.contents.frameNum)
             except Exception as e:
                 print(f"Error creating frame array: {str(e)}")
                 return None
-                
+                    
         except Exception as e:
             print(f"Exception in _get_uvc_color_frame: {str(e)}")
             return None
