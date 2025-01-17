@@ -22,7 +22,10 @@ class CameraTest:
             auto_range=True,
             colormap=ColorMap.TURBO,
             show_histogram=True,
-            show_info=True
+            show_info=True,
+            view_mode="side-by-side",
+            window_width=640,
+            window_height=480
         )
         self.viz = FrameVisualizer(config)
 
@@ -114,9 +117,11 @@ class CameraTest:
         print("Controls:")
         print("  'q': Quit")
         print("  'r': Toggle recording")
-        print("  's': Save current frame")
+        print("  's': Save frame")
+        print("  'v': Toggle view mode (side-by-side/overlay)")
         print("  'a': Toggle auto-range")
         print("  'c': Cycle colormaps")
+        print("  'h': Toggle histogram")
 
     def test_streaming(self):
         """Run streaming test with visualization"""
