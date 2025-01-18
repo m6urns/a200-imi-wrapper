@@ -6,9 +6,8 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List, Dict, Union
 from enum import Enum
 
-# SDK Structure definitions
+# SDK Structure definitions remain the same but removing UVC-specific structures
 class ImiFrameMode(Structure):
-    """Frame mode structure from IMI SDK"""
     _fields_ = [
         ("pixelFormat", c_uint32),
         ("resolutionX", c_int16),
@@ -18,7 +17,6 @@ class ImiFrameMode(Structure):
     ]
 
 class ImiImageFrame(Structure):
-    """Image frame structure from IMI SDK"""
     _fields_ = [
         ("pixelFormat", c_uint32),
         ("type", c_uint32),
@@ -29,35 +27,6 @@ class ImiImageFrame(Structure):
         ("height", c_int32),
         ("pData", c_void_p),
         ("pSkeletonData", c_void_p),
-        ("size", c_uint32)
-    ]
-
-# class ImiCameraFrameMode(Structure):
-#     """UVC camera frame mode structure"""
-#     _fields_ = [
-#         ("pixelFormat", c_uint32),
-#         ("resolutionX", c_int16),
-#         ("resolutionY", c_int16),
-#         ("fps", c_int8)
-#     ]
-
-class ImiCameraFrameMode(Structure):
-    """UVC camera frame mode structure with correct field types"""
-    _fields_ = [
-        ("pixelFormat", c_uint32),
-        ("resolutionX", c_uint32),  # Changed from c_uint16
-        ("resolutionY", c_uint32),  # Changed from c_uint16
-        ("fps", c_uint32)           # Changed from c_uint8
-    ]
-
-class ImiCameraFrame(Structure):
-    """UVC camera frame structure"""
-    _fields_ = [
-        ("frameNum", c_uint32),
-        ("timeStamp", c_uint64),
-        ("width", c_int32),
-        ("height", c_int32),
-        ("pData", POINTER(c_ubyte)),
         ("size", c_uint32)
     ]
 
@@ -83,21 +52,6 @@ class PixelFormat(Enum):
     YUV422 = 0x00000003
     IR_16BIT = 0x00000004
 
-@dataclass
-class CameraIntrinsics:
-    """Camera intrinsic parameters"""
-    fx: float  # Focal length x
-    fy: float  # Focal length y
-    cx: float  # Principal point x
-    cy: float  # Principal point y
-    k1: float = 0.0  # Radial distortion 1
-    k2: float = 0.0  # Radial distortion 2
-    p1: float = 0.0  # Tangential distortion 1
-    p2: float = 0.0  # Tangential distortion 2
-    k3: float = 0.0  # Radial distortion 3
-    width: int = 0   # Image width
-    height: int = 0  # Image height
-
 class ImiFrame:
     """Base class for camera frames"""
     def __init__(self, data: np.ndarray, timestamp: int, frame_number: int):
@@ -115,41 +69,78 @@ class ColorFrame(ImiFrame):
     pass
 
 class ImiCamera:
-    """Enhanced interface for IMI depth camera with UVC support"""
+    """Enhanced interface for IMI depth camera with OpenCV color support"""
     
     # SDK Constants
     IMI_SUCCESS = 0
     IMI_PROPERTY_DEPTH_INTRINSICS = 0x36
-    IMI_PROPERTY_COLOR_INTRINSICS = 0x1d
         
-    def __init__(self, lib_path: Optional[str] = None):
+    @staticmethod
+    def list_available_cameras():
+        """List all available OpenCV cameras on the system"""
+        available_cameras = []
+        for i in range(10):  # Check first 10 indices
+            try:
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    ret, _ = cap.read()
+                    if ret:
+                        # Get some basic properties
+                        width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                        height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        available_cameras.append({
+                            'index': i,
+                            'working': True,
+                            'resolution': f"{int(width)}x{int(height)}",
+                            'fps': fps
+                        })
+                    else:
+                        available_cameras.append({
+                            'index': i,
+                            'working': False
+                        })
+                cap.release()
+            except:
+                continue
+        return available_cameras
+
+    def __init__(self, lib_path: Optional[str] = None, color_index: Optional[int] = None):
+        """Initialize camera interface
+        
+        Args:
+            lib_path: Optional path to IMI SDK library
+            color_index: OpenCV camera index for color stream. If None, will auto-detect.
+        """
         if lib_path is None:
             sdk_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             self.imi_lib_path = os.path.join(sdk_dir, 'libs', 'libiminect.so')
-            # Update the camera library filename to match the actual file
-            self.cam_lib_path = os.path.join(sdk_dir, 'libs', 'libImiCamera.so')
         
         if not os.path.exists(self.imi_lib_path):
             raise RuntimeError(f"IMI SDK library not found at {self.imi_lib_path}")
             
         self.lib = CDLL(self.imi_lib_path)
-        
-        # Try to load camera library (optional)
-        try:
-            self.cam_lib = CDLL(self.cam_lib_path)
-            self.has_camera_lib = True
-        except OSError as e:
-            print(f"Note: UVC camera library not available: {str(e)}")
-            self.cam_lib = None
-            self.has_camera_lib = False
-            
         self._setup_functions()
         
         self.device = None
-        self.color_device = None  # UVC handle
         self.streams = {}
         self.intrinsics = {}
-        self.is_uvc_color = False
+        
+        # Auto-detect color camera if index not specified
+        if color_index is None:
+            cameras = self.list_available_cameras()
+            working_cameras = [cam for cam in cameras if cam['working']]
+            if working_cameras:
+                self.color_index = working_cameras[0]['index']
+                print(f"Auto-detected color camera at index {self.color_index}")
+            else:
+                self.color_index = 2  # Default fallback
+                print("No working cameras detected, defaulting to index 2")
+        else:
+            self.color_index = color_index
+        
+        self.color_cap = None
+        self.frame_count = 0
 
     def _setup_functions(self):
         """Setup C function interfaces from SDK"""
@@ -178,48 +169,6 @@ class ImiCamera:
         self.lib.imiReleaseFrame.argtypes = [POINTER(POINTER(ImiImageFrame))]
         self.lib.imiReleaseFrame.restype = c_int32
 
-        if self.has_camera_lib:
-            self.cam_lib.imiCamGetCurrentFrameMode.argtypes = [c_void_p]
-            self.cam_lib.imiCamGetCurrentFrameMode.restype = POINTER(ImiCameraFrameMode)
-            
-            # Error handling functions
-            self.lib.imiGetLastError.argtypes = []
-            self.lib.imiGetLastError.restype = c_int32
-            
-            self.lib.imiGetErrorString.argtypes = [c_int32]
-            self.lib.imiGetErrorString.restype = c_char_p
-            
-            # Camera functions - original open
-            self.cam_lib.imiCamOpen.argtypes = [POINTER(c_void_p)]
-            self.cam_lib.imiCamOpen.restype = c_int32
-            
-            # Camera functions - open with device selection
-            self.cam_lib.imiCamOpen2.argtypes = [
-                c_int32,     # vid
-                c_int32,     # pid
-                c_int32,     # fd
-                c_int32,     # busnum
-                c_int32,     # devaddr
-                c_char_p,    # usbfs
-                POINTER(c_void_p)  # pCameraDevice
-            ]
-            self.cam_lib.imiCamOpen2.restype = c_int32
-            
-            self.cam_lib.imiCamClose.argtypes = [c_void_p]
-            self.cam_lib.imiCamClose.restype = c_int32
-            
-            self.cam_lib.imiCamStartStream.argtypes = [c_void_p, POINTER(ImiCameraFrameMode)]
-            self.cam_lib.imiCamStartStream.restype = c_int32
-            
-            self.cam_lib.imiCamStopStream.argtypes = [c_void_p]
-            self.cam_lib.imiCamStopStream.restype = c_int32
-            
-            self.cam_lib.imiCamReadNextFrame.argtypes = [c_void_p, POINTER(POINTER(ImiCameraFrame)), c_int32]
-            self.cam_lib.imiCamReadNextFrame.restype = c_int32
-            
-            self.cam_lib.imiCamReleaseFrame.argtypes = [POINTER(POINTER(ImiCameraFrame))]
-            self.cam_lib.imiCamReleaseFrame.restype = c_int32
-
     def initialize(self) -> None:
         """Initialize the IMI SDK and open devices"""
         # Initialize IMI SDK
@@ -233,73 +182,6 @@ class ImiCamera:
         if ret != self.IMI_SUCCESS:
             raise RuntimeError(f"Failed to open IMI device: {ret}")
         self.device = device_ptr
-        
-        # Try to open UVC color camera if available
-        if self.has_camera_lib:
-            try:
-                print("Looking for color camera...")
-                color_device_ptr = c_void_p()
-                
-                # Use the basic open function first
-                ret = self.cam_lib.imiCamOpen(byref(color_device_ptr))
-                
-                if ret == self.IMI_SUCCESS and color_device_ptr:
-                    self.color_device = color_device_ptr
-                    print("Successfully opened UVC color camera")
-                    
-                    # Try to get device info
-                    try:
-                        # Get supported modes to verify device
-                        modes_ptr = POINTER(ImiCameraFrameMode)()
-                        num_modes = c_uint32()
-                        ret = self.cam_lib.imiCamGetSupportFrameModes(self.color_device, 
-                                                                    byref(modes_ptr), 
-                                                                    byref(num_modes))
-                        if ret == self.IMI_SUCCESS:
-                            print(f"Successfully queried {num_modes.value} supported modes")
-                        else:
-                            print(f"Note: Could not query supported modes (error: {ret})")
-                            
-                    except Exception as e:
-                        print(f"Warning: Error querying device info: {str(e)}")
-                else:
-                    print(f"Note: UVC color camera initialization failed (error code: {ret})")
-                    try:
-                        error_str = self.lib.imiGetErrorString(ret)
-                        print(f"Error description: {error_str}")
-                    except Exception:
-                        pass
-                        
-            except Exception as e:
-                print(f"Note: Failed to initialize UVC camera: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                
-    def _parse_camera_mode(self, mode) -> Optional[Tuple[int, int, int, int]]:
-        """Parse camera mode values and return tuple of (width, height, fps, format) if valid"""
-        # Extract the actual values from the format field
-        try:
-            # The format seems to encode both resolution values
-            width = mode.resolutionX
-            if width == 0:
-                width = mode.pixelFormat & 0xFFFF
-                
-            height = mode.resolutionY
-            if height == 0:
-                height = (mode.pixelFormat >> 16) & 0xFFFF
-                
-            fps = mode.fps
-            if fps == 0:
-                fps = 30  # Default to 30fps if not specified
-                
-            pixel_format = mode.pixelFormat
-            
-            # Basic validation
-            if width > 0 and height > 0 and fps > 0:
-                return (width, height, fps, pixel_format)
-        except Exception as e:
-            print(f"Error parsing camera mode: {str(e)}")
-        return None
 
     def open_stream(self, stream_type: StreamType) -> None:
         """Open stream of specified type"""
@@ -312,88 +194,63 @@ class ImiCamera:
             self._open_regular_stream(stream_type)
             
     def _open_color_stream(self):
-        """Attempt to open color stream through UVC or regular interface"""
-        if self.has_camera_lib and self.color_device:
-            try:
-                print("Attempting to start UVC color stream...")
-                
-                # Query supported frame modes
-                modes_ptr = POINTER(ImiCameraFrameMode)()
-                num_modes = c_uint32()
-                ret = self.cam_lib.imiCamGetSupportFrameModes(self.color_device, 
-                                                            byref(modes_ptr), 
-                                                            byref(num_modes))
-                if ret != self.IMI_SUCCESS:
-                    raise RuntimeError(f"Failed to query supported modes: {ret}")
-                    
-                print(f"\nFound {num_modes.value} supported modes:")
-                
-                # Parse and validate modes
-                valid_modes = []
-                for i in range(num_modes.value):
-                    mode = modes_ptr[i]
-                    parsed_mode = self._parse_camera_mode(mode)
-                    if parsed_mode:
-                        width, height, fps, fmt = parsed_mode
-                        print(f"Mode {len(valid_modes)}: {width}x{height} @ {fps}fps format={fmt}")
-                        valid_modes.append((mode, parsed_mode))
-                
-                if not valid_modes:
-                    raise RuntimeError("No valid camera modes found")
-                        
-                # Choose mode - prefer 640x480 @ 30fps
-                selected_mode = None
-                selected_parsed = None
-                
-                for mode, parsed in valid_modes:
-                    width, height, fps, _ = parsed
-                    print(f"Checking mode: {width}x{height} @ {fps}fps")
-                    if width == 640 and height == 480 and fps >= 30:
-                        selected_mode = mode
-                        selected_parsed = parsed
-                        break
-                        
-                if not selected_mode:
-                    # Fall back to first valid mode
-                    selected_mode, selected_parsed = valid_modes[0]
-                    
-                width, height, fps, _ = selected_parsed
-                print(f"\nSelected mode: {width}x{height} @ {fps}fps")
-                    
-                # Start stream with selected mode
-                ret = self.cam_lib.imiCamStartStream(self.color_device, byref(selected_mode))
-                if ret != self.IMI_SUCCESS:
-                    raise RuntimeError(f"Failed to start stream with selected mode: {ret}")
-                    
-                print("Successfully started UVC color stream")
-                self.streams[StreamType.COLOR] = self.color_device
-                self.is_uvc_color = True
-                
-                # Store both mode structs for frame handling
-                self._uvc_mode = selected_mode
-                self._uvc_mode_parsed = selected_parsed
-                return
-
-            except Exception as e:
-                print(f"Failed to initialize UVC color stream: {str(e)}")
-                print("Falling back to regular color stream...")
-
-        # Fallback to regular color stream
+        """Open color stream using OpenCV with robust error checking"""
         try:
-            stream_ptr = c_void_p()
-            ret = self.lib.imiOpenStream(self.device, StreamType.COLOR.value, None, None, 
-                                    byref(stream_ptr))
-            if ret == self.IMI_SUCCESS:
-                self.streams[StreamType.COLOR] = stream_ptr
-                self.is_uvc_color = False
-                print("Successfully opened regular color stream")
-                return
+            print(f"Opening OpenCV color stream with index {self.color_index}...")
+            self.color_cap = cv2.VideoCapture(self.color_index)
+            
+            if not self.color_cap.isOpened():
+                raise RuntimeError(f"Failed to open OpenCV camera {self.color_index}")
                 
-            raise RuntimeError(f"Failed to open color stream: {ret}")
+            # Try to read a test frame
+            ret, test_frame = self.color_cap.read()
+            if not ret or test_frame is None:
+                self.color_cap.release()
+                raise RuntimeError(f"Camera opened but failed to read test frame")
+                
+            # Get and print camera properties
+            props = {
+                cv2.CAP_PROP_FRAME_WIDTH: "Width",
+                cv2.CAP_PROP_FRAME_HEIGHT: "Height",
+                cv2.CAP_PROP_FPS: "FPS",
+                cv2.CAP_PROP_FORMAT: "Format",
+                cv2.CAP_PROP_MODE: "Mode",
+                cv2.CAP_PROP_BRIGHTNESS: "Brightness",
+                cv2.CAP_PROP_CONTRAST: "Contrast",
+                cv2.CAP_PROP_EXPOSURE: "Exposure"
+            }
+            
+            print("\nColor camera properties:")
+            for prop_id, prop_name in props.items():
+                value = self.color_cap.get(prop_id)
+                print(f"  {prop_name}: {value}")
+                
+            print(f"  Test frame shape: {test_frame.shape}")
+            
+            # Store the capture object as the stream
+            self.streams[StreamType.COLOR] = self.color_cap
+            print("Successfully opened OpenCV color stream")
+            
         except Exception as e:
-            raise RuntimeError(f"Failed to open COLOR stream: {str(e)}")
-
-        
+            error_msg = f"Failed to open COLOR stream: {str(e)}\n"
+            error_msg += "Available cameras on system:\n"
+            
+            # Try to list available cameras
+            for i in range(10):  # Check first 10 indices
+                try:
+                    temp_cap = cv2.VideoCapture(i)
+                    if temp_cap.isOpened():
+                        ret, _ = temp_cap.read()
+                        status = "Working" if ret else "Not working"
+                        error_msg += f"  Camera {i}: {status}\n"
+                    temp_cap.release()
+                except:
+                    continue
+                    
+            error_msg += f"\nTry using a different camera index when initializing:\n"
+            error_msg += f"camera = ImiCamera(color_index=X)  # where X is an available index"
+            raise RuntimeError(error_msg)
+            
     def _open_regular_stream(self, stream_type: StreamType):
         """Open a non-color stream (depth/IR)"""
         try:
@@ -403,12 +260,7 @@ class ImiCamera:
                                     byref(stream_ptr))
             
             if ret != self.IMI_SUCCESS:
-                error_str = None
-                try:
-                    error_str = self.lib.imiGetErrorString(ret)
-                except:
-                    pass
-                raise RuntimeError(f"Failed to open {stream_type.name} stream. Error: {ret} ({error_str})")
+                raise RuntimeError(f"Failed to open {stream_type.name} stream: {ret}")
                 
             self.streams[stream_type] = stream_ptr
             print(f"Successfully opened {stream_type.name} stream")
@@ -421,60 +273,26 @@ class ImiCamera:
         if stream_type not in self.streams:
             return None
             
-        # Handle UVC color stream
-        if stream_type == StreamType.COLOR and self.is_uvc_color:
-            return self._get_uvc_color_frame(timeout_ms)
+        # Handle OpenCV color stream
+        if stream_type == StreamType.COLOR:
+            return self._get_color_frame()
                 
-        # Handle regular streams (including non-UVC color)
+        # Handle regular streams
         return self._get_regular_frame(stream_type, timeout_ms)
 
-    def _get_uvc_color_frame(self, timeout_ms: int) -> Optional[ColorFrame]:
-        """Get frame from UVC color camera with enhanced error handling"""
-        if not self.color_device or not hasattr(self, '_uvc_mode_parsed'):
+    def _get_color_frame(self) -> Optional[ColorFrame]:
+        """Get frame from OpenCV color camera"""
+        if not self.color_cap or not self.color_cap.isOpened():
             return None
                 
-        frame_ptr = POINTER(ImiCameraFrame)()
-        try:
-            ret = self.cam_lib.imiCamReadNextFrame(self.color_device, byref(frame_ptr), timeout_ms)
-                
-            if ret != self.IMI_SUCCESS or not frame_ptr:
-                if ret != self.IMI_SUCCESS:
-                    print(f"Failed to read frame, error: {ret}")
-                return None
-                    
-            if not frame_ptr.contents:
-                print("Null frame contents")
-                return None
-                    
-            # Use parsed mode values for frame handling
-            width, height, _, _ = self._uvc_mode_parsed
-            bytes_per_pixel = 3  # RGB888
-            expected_size = width * height * bytes_per_pixel
-                    
-            if frame_ptr.contents.size != expected_size:
-                print(f"Unexpected frame size: got {frame_ptr.contents.size}, "
-                    f"expected {expected_size} for {width}x{height}")
-                return None
-                    
-            try:
-                data = np.ctypeslib.as_array(frame_ptr.contents.pData, 
-                                            shape=(height, width, 3)).copy()
-                return ColorFrame(data, 
-                                frame_ptr.contents.timeStamp,
-                                frame_ptr.contents.frameNum)
-            except Exception as e:
-                print(f"Error creating frame array: {str(e)}")
-                return None
-                    
-        except Exception as e:
-            print(f"Exception in _get_uvc_color_frame: {str(e)}")
+        ret, frame = self.color_cap.read()
+        if not ret or frame is None:
             return None
-        finally:
-            if frame_ptr:
-                try:
-                    self.cam_lib.imiCamReleaseFrame(byref(frame_ptr))
-                except Exception as e:
-                    print(f"Error releasing frame: {str(e)}")
+            
+        # Create color frame with OpenCV timestamp
+        self.frame_count += 1
+        timestamp = int(self.color_cap.get(cv2.CAP_PROP_POS_MSEC) * 1000)  # Convert to microseconds
+        return ColorFrame(frame, timestamp, self.frame_count)
 
     def _get_regular_frame(self, stream_type: StreamType, timeout_ms: int) -> Optional[Union[DepthFrame, ColorFrame]]:
         """Get frame from regular stream"""
@@ -511,61 +329,24 @@ class ImiCamera:
         finally:
             self.lib.imiReleaseFrame(byref(frame_ptr))
 
-    def _yuv420sp_to_rgb(self, yuv420sp: np.ndarray, width: int, height: int) -> np.ndarray:
-        """Convert YUV420SP format to RGB"""
-        rgb = np.empty((height, width, 3), dtype=np.uint8)
-        frameSize = width * height
-
-        for j in range(height):
-            yp = j * width
-            uvp = frameSize + (j >> 1) * width
-            u = v = 0
-
-            for i in range(width):
-                y = (0xff & yuv420sp[yp]) - 16
-                if y < 0:
-                    y = 0
-
-                if (i & 1) == 0:
-                    v = (0xff & yuv420sp[uvp]) - 128
-                    u = (0xff & yuv420sp[uvp + 1]) - 128
-                    uvp += 2
-
-                y1192 = 1192 * y
-                r = (y1192 + 1634 * v)
-                g = (y1192 - 833 * v - 400 * u)
-                b = (y1192 + 2066 * u)
-
-                r = min(max(r, 0), 262143) >> 10
-                g = min(max(g, 0), 262143) >> 10
-                b = min(max(b, 0), 262143) >> 10
-
-                rgb[j, i] = [r, g, b]
-                yp += 1
-
-        return rgb
-
     def close(self) -> None:
         """Clean up all resources"""
-        # Close any open streams
-        for stream_type, stream in self.streams.items():
+        # Close OpenCV color stream if open
+        if StreamType.COLOR in self.streams and self.color_cap:
             try:
-                if stream_type == StreamType.COLOR and self.is_uvc_color:
-                    if self.color_device and self.has_camera_lib:
-                        self.cam_lib.imiCamStopStream(self.color_device)
-                else:
-                    self.lib.imiCloseStream(stream)
+                self.color_cap.release()
             except Exception as e:
-                print(f"Warning: Error closing {stream_type.name} stream: {str(e)}")
-        self.streams.clear()
+                print(f"Warning: Error closing OpenCV camera: {str(e)}")
+        self.color_cap = None
         
-        # Close UVC color device if open
-        if self.color_device and self.has_camera_lib:
-            try:
-                self.cam_lib.imiCamClose(self.color_device)
-            except Exception as e:
-                print(f"Warning: Error closing UVC camera: {str(e)}")
-        self.color_device = None
+        # Close any regular streams
+        for stream_type, stream in self.streams.items():
+            if stream_type != StreamType.COLOR:
+                try:
+                    self.lib.imiCloseStream(stream)
+                except Exception as e:
+                    print(f"Warning: Error closing {stream_type.name} stream: {str(e)}")
+        self.streams.clear()
         
         # Close main IMI device
         if self.device:
@@ -596,6 +377,5 @@ __all__ = [
     'FrameMode',
     'DepthFrame',
     'ColorFrame',
-    'ImiFrame',
-    'CameraIntrinsics'
+    'ImiFrame'
 ]
