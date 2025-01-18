@@ -5,6 +5,7 @@ from ctypes import *
 from dataclasses import dataclass
 from typing import Optional, Tuple, List, Dict, Union
 from enum import Enum
+import time
 
 # SDK Structure definitions remain the same but removing UVC-specific structures
 class ImiFrameMode(Structure):
@@ -194,62 +195,65 @@ class ImiCamera:
             self._open_regular_stream(stream_type)
             
     def _open_color_stream(self):
-        """Open color stream using OpenCV with robust error checking"""
+        """Open color stream using OpenCV with robust initialization"""
         try:
             print(f"Opening OpenCV color stream with index {self.color_index}...")
-            self.color_cap = cv2.VideoCapture(self.color_index)
             
+            # First try to open with default backend
+            self.color_cap = cv2.VideoCapture(self.color_index)
+            if not self.color_cap.isOpened():
+                # Try with specific backend
+                self.color_cap = cv2.VideoCapture(self.color_index, cv2.CAP_V4L2)
+                
             if not self.color_cap.isOpened():
                 raise RuntimeError(f"Failed to open OpenCV camera {self.color_index}")
-                
-            # Try to read a test frame
-            ret, test_frame = self.color_cap.read()
-            if not ret or test_frame is None:
-                self.color_cap.release()
-                raise RuntimeError(f"Camera opened but failed to read test frame")
-                
-            # Get and print camera properties
-            props = {
-                cv2.CAP_PROP_FRAME_WIDTH: "Width",
-                cv2.CAP_PROP_FRAME_HEIGHT: "Height",
-                cv2.CAP_PROP_FPS: "FPS",
-                cv2.CAP_PROP_FORMAT: "Format",
-                cv2.CAP_PROP_MODE: "Mode",
-                cv2.CAP_PROP_BRIGHTNESS: "Brightness",
-                cv2.CAP_PROP_CONTRAST: "Contrast",
-                cv2.CAP_PROP_EXPOSURE: "Exposure"
-            }
             
-            print("\nColor camera properties:")
-            for prop_id, prop_name in props.items():
-                value = self.color_cap.get(prop_id)
-                print(f"  {prop_name}: {value}")
-                
-            print(f"  Test frame shape: {test_frame.shape}")
+            # Set camera properties
+            self.color_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.color_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.color_cap.set(cv2.CAP_PROP_FPS, 30)
             
+            # Give the camera time to initialize
+            time.sleep(1.0)
+            
+            # Warm up the camera by reading a few frames
+            for _ in range(5):
+                self.color_cap.read()
+                time.sleep(0.1)
+                
             # Store the capture object as the stream
             self.streams[StreamType.COLOR] = self.color_cap
-            print("Successfully opened OpenCV color stream")
+            
+            # Get and print camera properties
+            width = self.color_cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            height = self.color_cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            fps = self.color_cap.get(cv2.CAP_PROP_FPS)
+            print(f"Color camera initialized: {width}x{height} @ {fps}fps")
             
         except Exception as e:
-            error_msg = f"Failed to open COLOR stream: {str(e)}\n"
-            error_msg += "Available cameras on system:\n"
-            
-            # Try to list available cameras
-            for i in range(10):  # Check first 10 indices
-                try:
-                    temp_cap = cv2.VideoCapture(i)
-                    if temp_cap.isOpened():
-                        ret, _ = temp_cap.read()
-                        status = "Working" if ret else "Not working"
-                        error_msg += f"  Camera {i}: {status}\n"
-                    temp_cap.release()
-                except:
-                    continue
-                    
-            error_msg += f"\nTry using a different camera index when initializing:\n"
-            error_msg += f"camera = ImiCamera(color_index=X)  # where X is an available index"
-            raise RuntimeError(error_msg)
+            if self.color_cap:
+                self.color_cap.release()
+                self.color_cap = None
+            raise RuntimeError(f"Failed to open COLOR stream: {str(e)}")
+
+    def _get_color_frame(self) -> Optional[ColorFrame]:
+        """Get frame from OpenCV color camera with robust error handling"""
+        if not self.color_cap or not self.color_cap.isOpened():
+            return None
+        
+        # Try to read frame with retry
+        for attempt in range(3):  # Try up to 3 times
+            ret, frame = self.color_cap.read()
+            if ret and frame is not None:
+                self.frame_count += 1
+                timestamp = int(time.time() * 1_000_000)  # Use system time in microseconds
+                return ColorFrame(frame, timestamp, self.frame_count)
+                
+            if attempt < 2:  # Don't sleep on last attempt
+                time.sleep(0.01)
+        
+        return None
+    
             
     def _open_regular_stream(self, stream_type: StreamType):
         """Open a non-color stream (depth/IR)"""
@@ -280,19 +284,19 @@ class ImiCamera:
         # Handle regular streams
         return self._get_regular_frame(stream_type, timeout_ms)
 
-    def _get_color_frame(self) -> Optional[ColorFrame]:
-        """Get frame from OpenCV color camera"""
-        if not self.color_cap or not self.color_cap.isOpened():
-            return None
+    # def _get_color_frame(self) -> Optional[ColorFrame]:
+    #     """Get frame from OpenCV color camera"""
+    #     if not self.color_cap or not self.color_cap.isOpened():
+    #         return None
                 
-        ret, frame = self.color_cap.read()
-        if not ret or frame is None:
-            return None
+    #     ret, frame = self.color_cap.read()
+    #     if not ret or frame is None:
+    #         return None
             
-        # Create color frame with OpenCV timestamp
-        self.frame_count += 1
-        timestamp = int(self.color_cap.get(cv2.CAP_PROP_POS_MSEC) * 1000)  # Convert to microseconds
-        return ColorFrame(frame, timestamp, self.frame_count)
+    #     # Create color frame with OpenCV timestamp
+    #     self.frame_count += 1
+    #     timestamp = int(self.color_cap.get(cv2.CAP_PROP_POS_MSEC) * 1000)  # Convert to microseconds
+    #     return ColorFrame(frame, timestamp, self.frame_count)
 
     def _get_regular_frame(self, stream_type: StreamType, timeout_ms: int) -> Optional[Union[DepthFrame, ColorFrame]]:
         """Get frame from regular stream"""
