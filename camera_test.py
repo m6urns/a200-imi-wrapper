@@ -3,16 +3,46 @@
 import cv2
 import numpy as np
 import time
+import argparse
 from imi_wrapper import ImiCamera, StreamType
 from imi_visualization import FrameVisualizer, VisualizationConfig, ColorMap
 
 class CameraTest:
-    def __init__(self):
-        """Initialize test suite"""
+    def __init__(self, color_index=None):
+        """Initialize test suite
+        
+        Args:
+            color_index: Optional specific color camera index to use
+        """
         self.camera = None
         self.viz = None
         self.recording = False
         self.record_frames = []
+        self.color_index = color_index
+
+    def scan_cameras(self):
+        """Scan and display available cameras"""
+        print("\n=== Scanning Available Cameras ===")
+        cameras = ImiCamera.list_available_cameras()
+        working_cameras = []
+        
+        for cam in cameras:
+            if cam['working']:
+                print(f"✓ Camera {cam['index']}: {cam['resolution']} @ {cam['fps']}fps")
+                working_cameras.append(cam)
+            else:
+                print(f"✗ Camera {cam['index']}: Not working")
+        
+        if not working_cameras:
+            print("No working cameras detected!")
+            if self.color_index is None:
+                print("Will attempt to use default index 2")
+                self.color_index = 2
+        elif self.color_index is None:
+            self.color_index = working_cameras[0]['index']
+            print(f"\nUsing first working camera (index {self.color_index})")
+        
+        return len(working_cameras) > 0
 
     def setup_visualization(self):
         """Initialize visualization configuration"""
@@ -33,7 +63,7 @@ class CameraTest:
         """Initialize and test camera connection"""
         print("\n=== Testing Camera Initialization ===")
         try:
-            self.camera = ImiCamera()
+            self.camera = ImiCamera(color_index=self.color_index)
             self.camera.initialize()
             print("✓ Camera initialization successful")
             return True
@@ -41,21 +71,58 @@ class CameraTest:
             print(f"✗ Camera initialization failed: {str(e)}")
             return False
 
-    def open_streams(self):
-        """Open depth and color streams"""
-        # Open depth stream (required)
+    def test_streaming(self):
+        """Run streaming test with visualization"""
+        print("\n=== Testing Streaming ===")
         try:
-            self.camera.open_stream(StreamType.DEPTH)
-        except Exception as e:
-            raise RuntimeError(f"Failed to open depth stream: {str(e)}")
+            self.setup_visualization()
+            
+            # Open depth stream first
+            try:
+                self.camera.open_stream(StreamType.DEPTH)
+                print("✓ Depth stream opened successfully")
+            except Exception as e:
+                print(f"✗ Failed to open depth stream: {str(e)}")
+                return False
 
-        # Try to open color stream (optional)
-        try:
-            self.camera.open_stream(StreamType.COLOR)
-            return True
+            # Try to open color stream
+            try:
+                self.camera.open_stream(StreamType.COLOR)
+                print("✓ Color stream opened successfully")
+                has_color = True
+            except Exception as e:
+                print(f"\nNote: Color stream not available: {str(e)}")
+                has_color = False
+
+            self.print_controls()
+
+            fps_stats = {
+                'history': [],
+                'last_time': time.time(),
+                'frames_processed': 0
+            }
+
+            while True:
+                # Get frames
+                depth_frame = self.camera.get_frame(StreamType.DEPTH)
+                color_frame = self.camera.get_frame(StreamType.COLOR) if has_color else None
+
+                # Process frames
+                key = self.process_frame(depth_frame, color_frame, fps_stats)
+                if key is None:
+                    continue
+
+                # Handle user input
+                if self.handle_user_input(key, depth_frame, color_frame):
+                    print("\nStreaming test completed successfully")
+                    return True
+
         except Exception as e:
-            print(f"Note: Color stream not available: {str(e)}")
+            print(f"\n✗ Streaming test failed: {str(e)}")
             return False
+        finally:
+            if self.viz:
+                self.viz.close()
 
     def process_frame(self, depth_frame, color_frame, fps_stats):
         """Process and visualize camera frames"""
@@ -103,14 +170,6 @@ class CameraTest:
                 print(f"\nSaved frames with timestamp {timestamp}")
         return key == ord('q')
 
-    def save_recording(self):
-        """Save recorded frames if any exist"""
-        if self.record_frames:
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            filename = f'recorded_session_{timestamp}.npy'
-            np.save(filename, self.record_frames)
-            print(f"\nSaved recording to {filename}")
-
     def print_controls(self):
         """Print available keyboard controls"""
         print("\nStarting capture loop...")
@@ -123,45 +182,12 @@ class CameraTest:
         print("  'c': Cycle colormaps")
         print("  'h': Toggle histogram")
 
-    def test_streaming(self):
-        """Run streaming test with visualization"""
-        print("\n=== Testing Streaming ===")
-        try:
-            self.setup_visualization()
-            has_color = self.open_streams()
-            self.print_controls()
-
-            fps_stats = {
-                'history': [],
-                'last_time': time.time(),
-                'frames_processed': 0
-            }
-
-            while True:
-                # Get frames
-                depth_frame = self.camera.get_frame(StreamType.DEPTH)
-                color_frame = self.camera.get_frame(StreamType.COLOR) if has_color else None
-
-                # Process frames
-                key = self.process_frame(depth_frame, color_frame, fps_stats)
-                if key is None:
-                    continue
-
-                # Handle user input
-                if self.handle_user_input(key, depth_frame, color_frame):
-                    print("\nStreaming test completed successfully")
-                    return True
-
-        except Exception as e:
-            print(f"\n✗ Streaming test failed: {str(e)}")
-            return False
-        finally:
-            if self.viz:
-                self.viz.close()
-
     def run_all_tests(self):
         """Run complete test suite"""
         try:
+            # Scan for available cameras first
+            self.scan_cameras()
+            
             if not self.initialize_camera():
                 return
 
@@ -174,13 +200,15 @@ class CameraTest:
             if self.viz:
                 self.viz.close()
 
-            self.save_recording()
-
 def main():
+    parser = argparse.ArgumentParser(description='IMI Camera Test Suite')
+    parser.add_argument('--color-index', type=int, help='Specify color camera index')
+    args = parser.parse_args()
+
     print("Starting IMI Camera Test Suite")
     print("==============================")
     
-    test = CameraTest()
+    test = CameraTest(color_index=args.color_index)
     test.run_all_tests()
 
 if __name__ == "__main__":
