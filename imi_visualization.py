@@ -27,7 +27,7 @@ class VisualizationConfig:
     histogram_window: str = "Histogram"
     percentile_min: float = 1.0
     percentile_max: float = 99.0
-    view_mode: str = "overlay"  # or "overlay"
+    view_mode: str = "side-by-side"  # or "overlay"
     window_width: int = 640
     window_height: int = 480
     vertical_shift: int = 75     # Added alignment parameters
