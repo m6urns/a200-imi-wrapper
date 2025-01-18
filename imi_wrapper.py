@@ -42,12 +42,12 @@ class ImiImageFrame(Structure):
 #     ]
 
 class ImiCameraFrameMode(Structure):
-    """UVC camera frame mode structure - matches ImiCameraDefines.h"""
+    """UVC camera frame mode structure with correct field types"""
     _fields_ = [
-        ("pixelFormat", c_uint32),  # Changed from c_uint32
-        ("resolutionX", c_uint16),  # Changed from c_int16
-        ("resolutionY", c_uint16),  # Changed from c_int16
-        ("fps", c_uint8)            # Changed from c_int8
+        ("pixelFormat", c_uint32),
+        ("resolutionX", c_uint32),  # Changed from c_uint16
+        ("resolutionY", c_uint32),  # Changed from c_uint16
+        ("fps", c_uint32)           # Changed from c_uint8
     ]
 
 class ImiCameraFrame(Structure):
@@ -274,6 +274,32 @@ class ImiCamera:
                 print(f"Note: Failed to initialize UVC camera: {str(e)}")
                 import traceback
                 traceback.print_exc()
+                
+    def _parse_camera_mode(self, mode) -> Optional[Tuple[int, int, int, int]]:
+        """Parse camera mode values and return tuple of (width, height, fps, format) if valid"""
+        # Extract the actual values from the format field
+        try:
+            # The format seems to encode both resolution values
+            width = mode.resolutionX
+            if width == 0:
+                width = mode.pixelFormat & 0xFFFF
+                
+            height = mode.resolutionY
+            if height == 0:
+                height = (mode.pixelFormat >> 16) & 0xFFFF
+                
+            fps = mode.fps
+            if fps == 0:
+                fps = 30  # Default to 30fps if not specified
+                
+            pixel_format = mode.pixelFormat
+            
+            # Basic validation
+            if width > 0 and height > 0 and fps > 0:
+                return (width, height, fps, pixel_format)
+        except Exception as e:
+            print(f"Error parsing camera mode: {str(e)}")
+        return None
 
     def open_stream(self, stream_type: StreamType) -> None:
         """Open stream of specified type"""
@@ -287,12 +313,11 @@ class ImiCamera:
             
     def _open_color_stream(self):
         """Attempt to open color stream through UVC or regular interface"""
-        # First try UVC
         if self.has_camera_lib and self.color_device:
             try:
                 print("Attempting to start UVC color stream...")
                 
-                # Query supported frame modes first
+                # Query supported frame modes
                 modes_ptr = POINTER(ImiCameraFrameMode)()
                 num_modes = c_uint32()
                 ret = self.cam_lib.imiCamGetSupportFrameModes(self.color_device, 
@@ -301,26 +326,39 @@ class ImiCamera:
                 if ret != self.IMI_SUCCESS:
                     raise RuntimeError(f"Failed to query supported modes: {ret}")
                     
-                print(f"Found {num_modes.value} supported modes:")
+                print(f"\nFound {num_modes.value} supported modes:")
                 
-                # Choose a supported mode - prefer 640x480 RGB888 @ 30fps
-                selected_mode = None
+                # Parse and validate modes
+                valid_modes = []
                 for i in range(num_modes.value):
                     mode = modes_ptr[i]
-                    print(f"Mode {i}: {mode.resolutionX}x{mode.resolutionY} @ {mode.fps}fps "
-                        f"format={mode.pixelFormat}")
+                    parsed_mode = self._parse_camera_mode(mode)
+                    if parsed_mode:
+                        width, height, fps, fmt = parsed_mode
+                        print(f"Mode {len(valid_modes)}: {width}x{height} @ {fps}fps format={fmt}")
+                        valid_modes.append((mode, parsed_mode))
+                
+                if not valid_modes:
+                    raise RuntimeError("No valid camera modes found")
                         
-                    if (mode.resolutionX == 640 and mode.resolutionY == 480 and
-                        mode.fps == 30 and mode.pixelFormat == 0):  # RGB888
+                # Choose mode - prefer 640x480 @ 30fps
+                selected_mode = None
+                selected_parsed = None
+                
+                for mode, parsed in valid_modes:
+                    width, height, fps, _ = parsed
+                    print(f"Checking mode: {width}x{height} @ {fps}fps")
+                    if width == 640 and height == 480 and fps >= 30:
                         selected_mode = mode
+                        selected_parsed = parsed
                         break
                         
                 if not selected_mode:
-                    # Fall back to first available mode
-                    selected_mode = modes_ptr[0]
+                    # Fall back to first valid mode
+                    selected_mode, selected_parsed = valid_modes[0]
                     
-                print(f"Selected mode: {selected_mode.resolutionX}x{selected_mode.resolutionY} "
-                    f"@ {selected_mode.fps}fps")
+                width, height, fps, _ = selected_parsed
+                print(f"\nSelected mode: {width}x{height} @ {fps}fps")
                     
                 # Start stream with selected mode
                 ret = self.cam_lib.imiCamStartStream(self.color_device, byref(selected_mode))
@@ -331,8 +369,9 @@ class ImiCamera:
                 self.streams[StreamType.COLOR] = self.color_device
                 self.is_uvc_color = True
                 
-                # Store the selected mode for later use
+                # Store both mode structs for frame handling
                 self._uvc_mode = selected_mode
+                self._uvc_mode_parsed = selected_parsed
                 return
 
             except Exception as e:
@@ -391,7 +430,7 @@ class ImiCamera:
 
     def _get_uvc_color_frame(self, timeout_ms: int) -> Optional[ColorFrame]:
         """Get frame from UVC color camera with enhanced error handling"""
-        if not self.color_device or not hasattr(self, '_uvc_mode'):
+        if not self.color_device or not hasattr(self, '_uvc_mode_parsed'):
             return None
                 
         frame_ptr = POINTER(ImiCameraFrame)()
@@ -407,16 +446,16 @@ class ImiCamera:
                 print("Null frame contents")
                 return None
                     
-            # Use the stored mode information to validate frame
-            width = self._uvc_mode.resolutionX
-            height = self._uvc_mode.resolutionY
-            expected_size = width * height * 3  # RGB888 format
+            # Use parsed mode values for frame handling
+            width, height, _, _ = self._uvc_mode_parsed
+            bytes_per_pixel = 3  # RGB888
+            expected_size = width * height * bytes_per_pixel
                     
             if frame_ptr.contents.size != expected_size:
-                print(f"Unexpected frame size. Expected {expected_size}, got {frame_ptr.contents.size}")
+                print(f"Unexpected frame size: got {frame_ptr.contents.size}, "
+                    f"expected {expected_size} for {width}x{height}")
                 return None
                     
-            # Create numpy array from RGB data
             try:
                 data = np.ctypeslib.as_array(frame_ptr.contents.pData, 
                                             shape=(height, width, 3)).copy()
