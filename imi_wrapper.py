@@ -284,20 +284,6 @@ class ImiCamera:
         # Handle regular streams
         return self._get_regular_frame(stream_type, timeout_ms)
 
-    # def _get_color_frame(self) -> Optional[ColorFrame]:
-    #     """Get frame from OpenCV color camera"""
-    #     if not self.color_cap or not self.color_cap.isOpened():
-    #         return None
-                
-    #     ret, frame = self.color_cap.read()
-    #     if not ret or frame is None:
-    #         return None
-            
-    #     # Create color frame with OpenCV timestamp
-    #     self.frame_count += 1
-    #     timestamp = int(self.color_cap.get(cv2.CAP_PROP_POS_MSEC) * 1000)  # Convert to microseconds
-    #     return ColorFrame(frame, timestamp, self.frame_count)
-
     def _get_regular_frame(self, stream_type: StreamType, timeout_ms: int) -> Optional[Union[DepthFrame, ColorFrame]]:
         """Get frame from regular stream"""
         frame_ptr = POINTER(ImiImageFrame)()

@@ -47,13 +47,13 @@ class CameraTest:
     def setup_visualization(self):
         """Initialize visualization configuration"""
         config = VisualizationConfig(
-            min_depth=0,
-            max_depth=10000,
+            min_depth=100,
+            max_depth=300,
             auto_range=True,
             colormap=ColorMap.TURBO,
-            show_histogram=True,
+            show_histogram=False,
             show_info=True,
-            view_mode="side-by-side",
+            view_mode="overlay",
             window_width=640,
             window_height=480
         )
@@ -181,6 +181,12 @@ class CameraTest:
         print("  'a': Toggle auto-range")
         print("  'c': Cycle colormaps")
         print("  'h': Toggle histogram")
+        print("  'm': Toggle alignment adjustment mode")
+        print("\nWhen alignment adjustment mode is enabled:")
+        print("  'w': Move depth image up")
+        print("  's': Move depth image down")
+        print("  'a': Move depth image left")
+        print("  'd': Move depth image right")
 
     def run_all_tests(self):
         """Run complete test suite"""

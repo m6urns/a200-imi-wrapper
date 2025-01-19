@@ -30,8 +30,9 @@ class VisualizationConfig:
     view_mode: str = "side-by-side"  # or "overlay"
     window_width: int = 640
     window_height: int = 480
-    vertical_shift: int = 75     # Added alignment parameters
-    horizontal_shift: int = 25   # Added alignment parameters
+    vertical_shift: int = 75     
+    horizontal_shift: int = 51   
+    alignment_mode: bool = False  # Added alignment parameters
 
 class FrameVisualizer:
     """Visualizer for depth and RGB frames"""
@@ -100,45 +101,13 @@ class FrameVisualizer:
             
         info.extend([
             "'v': Toggle view mode",
-            "'a': Toggle auto range",
+            "'r': Toggle auto range",
             "'h': Toggle histogram",
             "'c': Change colormap",
             "'s': Save frame",
             "'q': Quit"
         ])
         return info
-
-    # def show(self, depth_frame: np.ndarray, rgb_frame: Optional[np.ndarray] = None):
-    #     """Display depth and RGB frames based on view mode"""
-    #     depth_colormap, normalized = self.visualize_depth(depth_frame)
-        
-    #     if depth_colormap is not None:
-    #         if rgb_frame is not None:
-    #             # Resize color frame to match depth
-    #             rgb_resized = cv2.resize(rgb_frame, 
-    #                                    (depth_colormap.shape[1], depth_colormap.shape[0]),
-    #                                    interpolation=cv2.INTER_AREA)
-                
-    #             if self.config.view_mode == "overlay":
-    #                 # Create blended overlay
-    #                 alpha = 0.7
-    #                 overlay = cv2.addWeighted(depth_colormap, alpha, 
-    #                                         rgb_resized, 1-alpha, 0)
-    #                 cv2.imshow(self.config.window_name, overlay)
-    #             else:
-    #                 # Show side by side
-    #                 cv2.imshow(self.config.window_name, depth_colormap)
-    #                 cv2.imshow(self.config.color_window, rgb_resized)
-    #         else:
-    #             cv2.imshow(self.config.window_name, depth_colormap)
-            
-    #         if self.config.show_histogram:
-    #             hist_img = self._create_histogram(depth_frame)
-    #             cv2.imshow(self.config.histogram_window, hist_img)
-                
-    #     key = cv2.waitKey(1) & 0xFF
-    #     self._handle_key(key)
-    #     return key
     
     def show(self, depth_frame: np.ndarray, rgb_frame: Optional[np.ndarray] = None):
         """Display depth and RGB frames with 2D alignment correction"""
@@ -151,12 +120,11 @@ class FrameVisualizer:
                                     (depth_colormap.shape[1], depth_colormap.shape[0]),
                                     interpolation=cv2.INTER_AREA)
                 
-                # Apply alignment corrections using config values
+                # Always apply alignment correction
                 rows, cols = depth_colormap.shape[:2]
                 shift_matrix = np.float32([[1, 0, self.config.horizontal_shift], 
                                         [0, 1, self.config.vertical_shift]])
                 
-                # Apply affine transformation for shift
                 depth_colormap = cv2.warpAffine(depth_colormap, 
                                             shift_matrix, 
                                             (cols, rows),
@@ -164,13 +132,11 @@ class FrameVisualizer:
                                             borderValue=[0, 0, 0])
                 
                 if self.config.view_mode == "overlay":
-                    # Create blended overlay
                     alpha = 0.7
                     overlay = cv2.addWeighted(depth_colormap, alpha, 
                                             rgb_resized, 1-alpha, 0)
                     cv2.imshow(self.config.window_name, overlay)
                 else:
-                    # Show side by side
                     cv2.imshow(self.config.window_name, depth_colormap)
                     cv2.imshow(self.config.color_window, rgb_resized)
             else:
@@ -180,15 +146,20 @@ class FrameVisualizer:
                 hist_img = self._create_histogram(depth_frame)
                 cv2.imshow(self.config.histogram_window, hist_img)
                 
-            # Add alignment info to display
-            info_img = np.zeros((100, 300, 3), dtype=np.uint8)
-            cv2.putText(info_img, f"Vertical shift: {self.config.vertical_shift}", 
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-            cv2.putText(info_img, f"Horizontal shift: {self.config.horizontal_shift}",
-                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-            cv2.putText(info_img, "WASD keys to adjust alignment",
-                    (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-            cv2.imshow("Alignment Info", info_img)
+            # Show alignment info window only when alignment adjustment mode is enabled
+            if self.config.alignment_mode:
+                info_img = np.zeros((100, 400, 3), dtype=np.uint8)
+                cv2.putText(info_img, f"Alignment Adjustment Mode: ENABLED", 
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                cv2.putText(info_img, f"Vertical shift: {self.config.vertical_shift}", 
+                        (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                cv2.putText(info_img, f"Horizontal shift: {self.config.horizontal_shift}",
+                        (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                cv2.putText(info_img, "WASD keys to adjust alignment",
+                        (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                cv2.imshow("Alignment Info", info_img)
+            elif cv2.getWindowProperty("Alignment Info", cv2.WND_PROP_VISIBLE) >= 0:
+                cv2.destroyWindow("Alignment Info")
                 
         key = cv2.waitKey(1) & 0xFF
         self._handle_key(key)
@@ -196,38 +167,41 @@ class FrameVisualizer:
 
     def _handle_key(self, key: int):
         """Handle keyboard input including alignment adjustments"""
-        if key == ord('r'):  # Changed from 'a' to 'r' for auto-range
+        if key == ord('r'):  
             self.config.auto_range = not self.config.auto_range
         elif key == ord('h'):
             self.config.show_histogram = not self.config.show_histogram
             if not self.config.show_histogram:
                 cv2.destroyWindow(self.config.histogram_window)
         elif key == ord('c'):
-            # Cycle through colormaps
             colormaps = list(ColorMap)
             current_idx = colormaps.index(self.config.colormap)
             self.config.colormap = colormaps[(current_idx + 1) % len(colormaps)]
         elif key == ord('v'):
-            # Toggle view mode
             self.config.view_mode = "overlay" if self.config.view_mode == "side-by-side" else "side-by-side"
             cv2.destroyAllWindows()
             self.windows_created = False
             self._create_windows()
-        # Alignment controls with smaller step size
-        elif key == ord('w'):  # Up
-            self.config.vertical_shift -= 2
-            print(f"Vertical shift: {self.config.vertical_shift}")
-        elif key == ord('s'):  # Down
-            self.config.vertical_shift += 2
-            print(f"Vertical shift: {self.config.vertical_shift}")
-        elif key == ord('d'):  # Right
-            self.config.horizontal_shift += 2
-            print(f"Horizontal shift: {self.config.horizontal_shift}")
-        elif key == ord('a'):  # Left
-            self.config.horizontal_shift -= 2
-            print(f"Horizontal shift: {self.config.horizontal_shift}")
-        elif key == ord('z'):  # Save frame
-            print("Saving frame...")
+        elif key == ord('m'):  # New hotkey to toggle alignment mode
+            self.config.alignment_mode = not self.config.alignment_mode
+            print(f"Alignment mode {'enabled' if self.config.alignment_mode else 'disabled'}")
+            if not self.config.alignment_mode and cv2.getWindowProperty("Alignment Info", cv2.WND_PROP_VISIBLE) >= 0:
+                cv2.destroyWindow("Alignment Info")
+        
+        # Only process WASD keys if alignment mode is enabled
+        if self.config.alignment_mode:
+            if key == ord('w'):
+                self.config.vertical_shift -= 2
+                print(f"Vertical shift: {self.config.vertical_shift}")
+            elif key == ord('s'):
+                self.config.vertical_shift += 2
+                print(f"Vertical shift: {self.config.vertical_shift}")
+            elif key == ord('d'):
+                self.config.horizontal_shift += 2
+                print(f"Horizontal shift: {self.config.horizontal_shift}")
+            elif key == ord('a'):
+                self.config.horizontal_shift -= 2
+                print(f"Horizontal shift: {self.config.horizontal_shift}")
             
     def _update_fps(self):
         """Update FPS calculation"""
@@ -272,7 +246,7 @@ class FrameVisualizer:
     #         f"Valid pixels: {(np.sum(valid_mask)/valid_mask.size*100):.1f}%",
     #         f"Mean depth: {np.mean(depth_frame[valid_mask]):.0f}mm",
     #         "Auto range: ON" if self.config.auto_range else "Auto range: OFF",
-    #         "'a': Toggle auto range",
+    #         "'r': Toggle auto range",
     #         "'h': Toggle histogram",
     #         "'c': Change colormap",
     #         "'s': Save frame",
