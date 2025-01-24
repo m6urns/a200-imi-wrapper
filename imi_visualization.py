@@ -30,8 +30,8 @@ class VisualizationConfig:
     view_mode: str = "side-by-side"  # or "overlay"
     window_width: int = 640
     window_height: int = 480
-    vertical_shift: int = 75     
-    horizontal_shift: int = 51   
+    vertical_shift: int = 71    
+    horizontal_shift: int = 45   
     alignment_mode: bool = False  # Added alignment parameters
 
 class FrameVisualizer:
@@ -381,7 +381,6 @@ class FrameVisualizer:
         cv2.destroyAllWindows()
         self.windows_created = False
 
-# Example usage:
 if __name__ == "__main__":
     from imi_camera import ImiCamera
     
