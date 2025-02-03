@@ -1,0 +1,9 @@
+{
+  "stage": "loose",
+  "capture_timestamp": "2025-02-02T16:17:38.277920",
+  "notes": null,
+  "rgb_frame_number": 250,
+  "depth_frame_number": 300,
+  "rgb_timestamp": 1738538258264337,
+  "depth_timestamp": 101060251000
+}

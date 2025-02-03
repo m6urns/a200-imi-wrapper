@@ -1,0 +1,9 @@
+{
+  "stage": "tightened",
+  "capture_timestamp": "2025-02-02T16:20:45.693479",
+  "notes": null,
+  "rgb_frame_number": 4935,
+  "depth_frame_number": 4985,
+  "rgb_timestamp": 1738538445678463,
+  "depth_timestamp": 101247666000
+}
