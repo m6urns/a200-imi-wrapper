@@ -435,22 +435,55 @@ async def lifespan(app: FastAPI):
     if classifier_api:
         classifier_api.cleanup()
 
-# Create FastAPI app
 app = FastAPI(
     title="Knot Classifier API",
+    description="API for real-time knot tying classification using RGB-D camera",
     lifespan=lifespan
 )
 
 @app.get("/status")
 async def get_status():
+    """
+    Get current system status.
+    
+    Returns:
+        dict: Contains information about:
+            - Camera connection status
+            - Model loading status
+            - Current FPS
+            - Current timestamp
+    """
     return classifier_api.get_status()
 
 @app.get("/classification")
 async def get_classification():
+    """
+    Get the latest knot classification result.
+    
+    Returns:
+        dict: Classification details including:
+            - Predicted stage ("loose", "loop", "complete", "tightened", or "unknown")
+            - Confidence score (0.0 to 1.0)
+            - Timestamp of classification
+            - Individual probability scores for each possible stage
+    """
     return classifier_api.get_classification()
 
 @app.get("/stream")
 async def get_stream():
+    """
+    Get live video stream of the classification visualization.
+    
+    Returns:
+        StreamingResponse: MJPEG stream containing:
+            - Color camera feed
+            - Depth visualization
+            - Current classification results
+            - FPS counter
+            
+    Raises:
+        500: If stream cannot be initialized or encounters an error
+    """
     try:
         return StreamingResponse(
             classifier_api.encode_frame(),
@@ -462,14 +495,30 @@ async def get_stream():
             status_code=500,
             content={"error": "Stream error occurred"}
         )
-        
+
 @app.post("/alignment")
 async def update_alignment(
     vertical_shift: Optional[int] = None,
     horizontal_shift: Optional[int] = None,
     mode: Optional[bool] = None
 ):
-    """Update alignment parameters"""
+    """
+    Update depth-color camera alignment parameters.
+    
+    Args:
+        vertical_shift: Vertical offset in pixels for depth image alignment.
+            Positive values move depth image down, negative values move it up.
+        horizontal_shift: Horizontal offset in pixels for depth image alignment.
+            Positive values move depth image right, negative values move it left.
+        mode: Enable/disable alignment adjustment mode. When enabled, shows current
+            alignment values in the video stream.
+    
+    Returns:
+        dict: Current alignment settings after update:
+            - vertical_shift: Current vertical offset
+            - horizontal_shift: Current horizontal offset
+            - alignment_mode: Whether alignment mode is enabled
+    """
     if vertical_shift is not None:
         classifier_api.settings.vertical_shift = vertical_shift
     if horizontal_shift is not None:
@@ -485,10 +534,31 @@ async def update_alignment(
 
 @app.get("/settings")
 async def get_settings():
+    """
+    Get current system settings.
+    
+    Returns:
+        Settings: Complete settings object containing:
+            - Camera settings (index)
+            - Model settings (path, confidence threshold)
+            - Visualization settings (view mode, depth range)
+            - Server settings (host, port)
+            - Alignment settings (shifts, mode)
+    """
     return classifier_api.get_settings()
 
 @app.post("/settings")
 async def update_settings(settings: Settings):
+    """
+    Update system settings.
+    
+    Args:
+        settings: Complete Settings object with new values.
+            All fields are optional and only provided values will be updated.
+    
+    Returns:
+        dict: Status of update operation
+    """
     classifier_api.update_settings(settings)
     return {"status": "success"}
 
