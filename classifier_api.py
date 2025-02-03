@@ -11,8 +11,9 @@ from datetime import datetime
 import threading
 import queue
 import time
+import argparse
 from typing import Optional, Dict
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pathlib import Path
 
 from knot_classifier import DualStreamKnotClassifier
@@ -24,19 +25,66 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class Settings(BaseModel):
-    """API settings model"""
-    view_mode: Optional[str] = "side-by-side"
-    auto_range: Optional[bool] = True
-    confidence_threshold: Optional[float] = 0.7
+    """API settings model with explicit parameter names and descriptions"""
+    # Camera and hardware settings
+    camera_index: int = Field(
+        default=4,
+        description="Index of the color camera to use",
+        ge=0
+    )
+    
+    # Model settings
+    model_path: str = Field(
+        default='best_model.pth',
+        description="Path to the trained model weights file"
+    )
+    confidence_threshold: float = Field(
+        default=0.4,
+        description="Minimum confidence threshold for classifications",
+        ge=0.0,
+        le=1.0
+    )
+    
+    # Visualization settings
+    view_mode: str = Field(
+        default="side-by-side",
+        description="Visualization mode ('side-by-side' or 'overlay')"
+    )
+    auto_range: bool = Field(
+        default=True,
+        description="Automatically adjust depth range"
+    )
+    min_depth: int = Field(
+        default=100,
+        description="Minimum depth value in mm",
+        ge=0
+    )
+    max_depth: int = Field(
+        default=1000,
+        description="Maximum depth value in mm",
+        ge=0
+    )
+    
+    # Server settings
+    host: str = Field(
+        default="0.0.0.0",
+        description="Host address to bind the server"
+    )
+    port: int = Field(
+        default=8000,
+        description="Port number for the server",
+        ge=0,
+        le=65535
+    )
 
 class KnotClassifierAPI:
     """API wrapper for knot classifier"""
     
     STAGES = ["loose", "loop", "complete", "tightened"]
     
-    def __init__(self, model_path: str = 'best_model.pth', color_index: int = 5):
-        """Initialize API wrapper"""
-        self.settings = Settings()
+    def __init__(self, settings: Optional[Settings] = None):
+        """Initialize API wrapper with settings"""
+        self.settings = settings or Settings()
         self.latest_frame = None
         self.latest_classification = {
             "stage": "unknown",
@@ -45,21 +93,20 @@ class KnotClassifierAPI:
         }
         self.fps = 0
         self.is_running = False
-        self.frame_queue = queue.Queue(maxsize=2)  # Small queue for latest frames
+        self.frame_queue = queue.Queue(maxsize=2)
         
         # Initialize visualization config
         self.viz_config = VisualizationConfig(
-            min_depth=100,
-            max_depth=1000,
-            auto_range=True,
+            min_depth=self.settings.min_depth,
+            max_depth=self.settings.max_depth,
+            auto_range=self.settings.auto_range,
             colormap=ColorMap.TURBO,
-            show_histogram=False,  # Disable histogram
-            show_info=False,      # Disable info overlay
-            view_mode="side-by-side",
+            show_histogram=False,
+            show_info=False,
+            view_mode=self.settings.view_mode,
             window_width=800,
             window_height=600
         )
-        self.viz = FrameVisualizer(self.viz_config)
         
         # Initialize transforms
         self.rgb_transform = transforms.Compose([
@@ -82,13 +129,13 @@ class KnotClassifierAPI:
         logger.info(f"Using device: {self.device}")
         
         try:
-            weights_path = Path(model_path)
+            weights_path = Path(self.settings.model_path)
             if not weights_path.exists():
-                raise FileNotFoundError(f"Model weights not found at {model_path}")
+                raise FileNotFoundError(f"Model weights not found at {self.settings.model_path}")
                 
-            self.classifier = DualStreamKnotClassifier()
+            self.classifier = DualStreamKnotClassifier(num_classes=len(self.STAGES))
             logger.info("Loading model weights...")
-            model_state = torch.load(model_path, map_location=self.device)
+            model_state = torch.load(self.settings.model_path, map_location=self.device)
             self.classifier.load_state_dict(model_state)
             self.classifier.to(self.device)
             self.classifier.eval()
@@ -98,10 +145,15 @@ class KnotClassifierAPI:
             raise
         
         # Initialize camera
-        self.camera = ImiCamera(color_index=color_index)
-        self.camera.initialize()
-        self.camera.open_stream(StreamType.DEPTH)
-        self.camera.open_stream(StreamType.COLOR)
+        try:
+            self.camera = ImiCamera(color_index=self.settings.camera_index)
+            self.camera.initialize()
+            self.camera.open_stream(StreamType.DEPTH)
+            self.camera.open_stream(StreamType.COLOR)
+            logger.info(f"Camera initialized with index {self.settings.camera_index}")
+        except Exception as e:
+            logger.error(f"Camera initialization failed: {str(e)}")
+            raise
         
         # Start processing thread
         self.processing_thread = threading.Thread(target=self.process_frames)
@@ -152,19 +204,9 @@ class KnotClassifierAPI:
                     depth_viz = depth_frame.data.copy()
                     color_viz = color_frame.data.copy()
                     
-                    # Normalize depth for visualization
-                    depth_min = depth_viz[depth_viz > 0].min() if np.any(depth_viz > 0) else 0
-                    depth_max = depth_viz.max()
-                    depth_normalized = np.zeros_like(depth_viz, dtype=np.uint8)
-                    if depth_max > depth_min:
-                        valid_mask = depth_viz > 0
-                        depth_normalized[valid_mask] = ((depth_viz[valid_mask] - depth_min) * 255 / 
-                                                      (depth_max - depth_min))
-                    
                     # Get model prediction
                     with torch.no_grad():
                         rgb_tensor, depth_tensor = self.preprocess_frames(color_frame, depth_frame)
-                        # Store tensors for reuse
                         self.last_rgb_tensor = rgb_tensor
                         self.last_depth_tensor = depth_tensor
                         
@@ -174,23 +216,18 @@ class KnotClassifierAPI:
                         confidence = confidence.item()
                         predicted_idx = predicted.item()
                         
-                        logger.debug(f"Raw prediction: {predicted_idx}, Confidence: {confidence:.3f}")
-                        
                         if confidence >= self.settings.confidence_threshold:
                             predicted_stage = self.STAGES[predicted_idx]
-                            logger.info(f"Classified as {predicted_stage} with confidence {confidence:.3f}")
                         else:
                             predicted_stage = "unknown"
-                            logger.info(f"Low confidence ({confidence:.3f}) - marked as unknown")
                     
-                    # Update latest classification
                     self.latest_classification = {
                         "stage": predicted_stage,
                         "confidence": confidence,
                         "timestamp": datetime.now().isoformat()
                     }
                     
-                    # Add visualization overlay
+                    # Create visualization
                     confidence_color = (0, 255, 0) if confidence >= self.settings.confidence_threshold else (0, 165, 255)
                     cv2.putText(color_viz, f"Stage: {predicted_stage}", 
                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
@@ -202,54 +239,54 @@ class KnotClassifierAPI:
                               (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
                               (255, 255, 255), 2)
                     
-                    # Create combined visualization
-                    # Convert depth visualization to 3-channel (applying colormap)
+                    # Normalize and colorize depth frame
+                    depth_min = depth_viz[depth_viz > 0].min() if np.any(depth_viz > 0) else 0
+                    depth_max = depth_viz.max()
+                    depth_normalized = np.zeros_like(depth_viz, dtype=np.uint8)
+                    if depth_max > depth_min:
+                        valid_mask = depth_viz > 0
+                        depth_normalized[valid_mask] = ((depth_viz[valid_mask] - depth_min) * 255 / 
+                                                      (depth_max - depth_min))
                     depth_colormap = cv2.applyColorMap(depth_normalized, self.viz_config.colormap.value)
                     
-                    # Ensure same size before stacking
+                    # Ensure same size before combining
                     if depth_colormap.shape[:2] != color_viz.shape[:2]:
                         depth_colormap = cv2.resize(depth_colormap, 
                                                   (color_viz.shape[1], color_viz.shape[0]))
                     
-                    combined_frame = np.hstack((color_viz, depth_colormap))
+                    if self.viz_config.view_mode == "overlay":
+                        alpha = 0.7
+                        combined_frame = cv2.addWeighted(depth_colormap, alpha, color_viz, 1-alpha, 0)
+                    else:  # side-by-side
+                        combined_frame = np.hstack((color_viz, depth_colormap))
                     
                     # Update frame queue
                     try:
                         self.frame_queue.put_nowait(combined_frame)
-                        if frame_count % 30 == 0:
-                            logger.info(f"Queue size: {self.frame_queue.qsize()}")
                     except queue.Full:
                         try:
-                            self.frame_queue.get_nowait()  # Remove old frame
+                            self.frame_queue.get_nowait()
                             self.frame_queue.put_nowait(combined_frame)
                         except queue.Empty:
                             pass
-                else:
-                    logger.warning("Received None frame from camera")
+                            
             except Exception as e:
                 logger.error(f"Error in processing loop: {str(e)}")
-                time.sleep(0.1)  # Avoid tight loop on error
+                time.sleep(0.1)
     
     def encode_frame(self):
         """Generator for MJPEG streaming"""
-        logger.info("Starting frame encoding")
-        frame_count = 0
         while self.is_running:
             try:
                 frame = self.frame_queue.get(timeout=1.0)
                 if frame is not None:
-                    frame_count += 1
                     ret, encoded_frame = cv2.imencode('.jpg', frame)
                     if ret:
-                        if frame_count % 30 == 0:
-                            logger.info(f"Encoded {frame_count} frames")
                         yield (b'--frame\r\n'
                                b'Content-Type: image/jpeg\r\n\r\n' + 
                                encoded_frame.tobytes() + b'\r\n')
-                    else:
-                        logger.error("Failed to encode frame")
             except queue.Empty:
-                logger.warning("Frame queue empty")
+                continue
     
     def get_status(self) -> Dict:
         """Get current system status"""
@@ -301,8 +338,39 @@ class KnotClassifierAPI:
             self.processing_thread.join()
         if self.camera:
             self.camera.close()
-        if self.viz:
-            self.viz.close()
+
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Knot Classifier API Server')
+    
+    # Camera settings
+    parser.add_argument('--camera-index', type=int, default=7,
+                      help='Index of the color camera to use (default: 7)')
+    
+    # Model settings
+    parser.add_argument('--model-path', type=str, default='best_model.pth',
+                      help='Path to the trained model weights file (default: best_model.pth)')
+    parser.add_argument('--confidence-threshold', type=float, default=0.7,
+                      help='Minimum confidence threshold for classifications (default: 0.7)')
+    
+    # Visualization settings
+    parser.add_argument('--view-mode', type=str, default='side-by-side',
+                      choices=['side-by-side', 'overlay'],
+                      help='Visualization mode (default: side-by-side)')
+    parser.add_argument('--auto-range', type=bool, default=True,
+                      help='Automatically adjust depth range (default: True)')
+    parser.add_argument('--min-depth', type=int, default=100,
+                      help='Minimum depth value in mm (default: 100)')
+    parser.add_argument('--max-depth', type=int, default=1000,
+                      help='Maximum depth value in mm (default: 1000)')
+    
+    # Server settings
+    parser.add_argument('--host', type=str, default='0.0.0.0',
+                      help='Host address to bind the server (default: 0.0.0.0)')
+    parser.add_argument('--port', type=int, default=8002,
+                      help='Port number for the server (default: 8002)')
+    
+    return parser.parse_args()
 
 # Global instance for API
 classifier_api = None
@@ -310,11 +378,21 @@ classifier_api = None
 # Lifespan context manager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     global classifier_api
-    classifier_api = KnotClassifierAPI()
+    args = parse_args()
+    settings = Settings(
+        camera_index=args.camera_index,
+        model_path=args.model_path,
+        confidence_threshold=args.confidence_threshold,
+        view_mode=args.view_mode,
+        auto_range=args.auto_range,
+        min_depth=args.min_depth,
+        max_depth=args.max_depth,
+        host=args.host,
+        port=args.port
+    )
+    classifier_api = KnotClassifierAPI(settings=settings)
     yield
-    # Shutdown
     if classifier_api:
         classifier_api.cleanup()
 
@@ -334,7 +412,6 @@ async def get_classification():
 
 @app.get("/stream")
 async def get_stream():
-    logger.info("Stream requested")
     try:
         return StreamingResponse(
             classifier_api.encode_frame(),
@@ -357,7 +434,9 @@ async def update_settings(settings: Settings):
     return {"status": "success"}
 
 def main():
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    """Main entry point with command line arguments"""
+    args = parse_args()
+    uvicorn.run(app, host=args.host, port=args.port)
 
 if __name__ == "__main__":
     main()
