@@ -47,7 +47,7 @@ class Settings(BaseModel):
     
     # Visualization settings
     view_mode: str = Field(
-        default="overlay",
+        default="side-by-side",
         description="Visualization mode ('side-by-side' or 'overlay')"
     )
     auto_range: bool = Field(
@@ -385,7 +385,7 @@ def parse_args():
                       help='Minimum confidence threshold for classifications (default: 0.7)')
     
     # Visualization settings
-    parser.add_argument('--view-mode', type=str, default='overlay',
+    parser.add_argument('--view-mode', type=str, default='side-by-side',
                       choices=['side-by-side', 'overlay'],
                       help='Visualization mode (default: side-by-side)')
     parser.add_argument('--auto-range', type=bool, default=True,
