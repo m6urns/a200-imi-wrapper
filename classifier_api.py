@@ -47,7 +47,7 @@ class Settings(BaseModel):
     
     # Visualization settings
     view_mode: str = Field(
-        default="side-by-side",
+        default="overlay",
         description="Visualization mode ('side-by-side' or 'overlay')"
     )
     auto_range: bool = Field(
@@ -63,6 +63,20 @@ class Settings(BaseModel):
         default=1000,
         description="Maximum depth value in mm",
         ge=0
+    )
+    
+    # Image alignment settings
+    vertical_shift: int = Field(
+        default=71,
+        description="Vertical shift for depth-color alignment in pixels"
+    )
+    horizontal_shift: int = Field(
+        default=45,
+        description="Horizontal shift for depth-color alignment in pixels"
+    )
+    alignment_mode: bool = Field(
+        default=False,
+        description="Enable alignment adjustment mode"
     )
     
     # Server settings
@@ -253,12 +267,29 @@ class KnotClassifierAPI:
                     if depth_colormap.shape[:2] != color_viz.shape[:2]:
                         depth_colormap = cv2.resize(depth_colormap, 
                                                   (color_viz.shape[1], color_viz.shape[0]))
+                        
+                            # Apply alignment shift
+                    rows, cols = depth_colormap.shape[:2]
+                    shift_matrix = np.float32([[1, 0, self.settings.horizontal_shift],
+                                            [0, 1, self.settings.vertical_shift]])
+                    depth_colormap = cv2.warpAffine(depth_colormap,
+                                                shift_matrix,
+                                                (cols, rows),
+                                                borderMode=cv2.BORDER_CONSTANT,
+                                                borderValue=[0, 0, 0])
                     
                     if self.viz_config.view_mode == "overlay":
                         alpha = 0.7
                         combined_frame = cv2.addWeighted(depth_colormap, alpha, color_viz, 1-alpha, 0)
                     else:  # side-by-side
                         combined_frame = np.hstack((color_viz, depth_colormap))
+                        
+                    # Add alignment info if in alignment mode
+                    if self.settings.alignment_mode:
+                        cv2.putText(combined_frame, 
+                                f"Alignment Mode: v={self.settings.vertical_shift} h={self.settings.horizontal_shift}",
+                                (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                                (255, 255, 255), 2)
                     
                     # Update frame queue
                     try:
@@ -354,7 +385,7 @@ def parse_args():
                       help='Minimum confidence threshold for classifications (default: 0.7)')
     
     # Visualization settings
-    parser.add_argument('--view-mode', type=str, default='side-by-side',
+    parser.add_argument('--view-mode', type=str, default='overlay',
                       choices=['side-by-side', 'overlay'],
                       help='Visualization mode (default: side-by-side)')
     parser.add_argument('--auto-range', type=bool, default=True,
@@ -363,6 +394,14 @@ def parse_args():
                       help='Minimum depth value in mm (default: 100)')
     parser.add_argument('--max-depth', type=int, default=1000,
                       help='Maximum depth value in mm (default: 1000)')
+    
+    # Image alignment settings
+    parser.add_argument('--vertical-shift', type=int, default=47,
+                      help='Vertical shift for depth-color alignment (default: 71)')
+    parser.add_argument('--horizontal-shift', type=int, default=28,
+                      help='Horizontal shift for depth-color alignment (default: 45)')
+    parser.add_argument('--alignment-mode', action='store_true',
+                      help='Enable alignment adjustment mode')
     
     # Server settings
     parser.add_argument('--host', type=str, default='0.0.0.0',
@@ -423,6 +462,26 @@ async def get_stream():
             status_code=500,
             content={"error": "Stream error occurred"}
         )
+        
+@app.post("/alignment")
+async def update_alignment(
+    vertical_shift: Optional[int] = None,
+    horizontal_shift: Optional[int] = None,
+    mode: Optional[bool] = None
+):
+    """Update alignment parameters"""
+    if vertical_shift is not None:
+        classifier_api.settings.vertical_shift = vertical_shift
+    if horizontal_shift is not None:
+        classifier_api.settings.horizontal_shift = horizontal_shift
+    if mode is not None:
+        classifier_api.settings.alignment_mode = mode
+        
+    return {
+        "vertical_shift": classifier_api.settings.vertical_shift,
+        "horizontal_shift": classifier_api.settings.horizontal_shift,
+        "alignment_mode": classifier_api.settings.alignment_mode
+    }
 
 @app.get("/settings")
 async def get_settings():
