@@ -106,19 +106,22 @@ class ImiCamera:
                 continue
         return available_cameras
 
-    def __init__(self, lib_path: Optional[str] = None, color_index: Optional[int] = None):
-        """Initialize camera interface
-        
-        Args:
-            lib_path: Optional path to IMI SDK library
-            color_index: OpenCV camera index for color stream. If None, will auto-detect.
-        """
-        if lib_path is None:
-            sdk_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.imi_lib_path = os.path.join(sdk_dir, 'libs', 'libiminect.so')
-        
-        if not os.path.exists(self.imi_lib_path):
-            raise RuntimeError(f"IMI SDK library not found at {self.imi_lib_path}")
+def __init__(self, lib_path: Optional[str] = None, color_index: Optional[int] = None):
+    """Initialize camera interface
+    
+    Args:
+        lib_path: Optional path to IMI SDK library
+        color_index: OpenCV camera index for color stream. If None, will auto-detect.
+    """
+    # Fix the lib_path assignment
+    self.imi_lib_path = lib_path if lib_path is not None else os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+        'libs', 
+        'libiminect.so'
+    )
+    
+    if not os.path.exists(self.imi_lib_path):
+        raise RuntimeError(f"IMI SDK library not found at {self.imi_lib_path}")
             
         self.lib = CDLL(self.imi_lib_path)
         self._setup_functions()
