@@ -113,6 +113,7 @@ class ImiCamera:
             lib_path: Optional path to IMI SDK library
             color_index: OpenCV camera index for color stream. If None, will auto-detect.
         """
+        
         if lib_path is None:
             sdk_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             self.imi_lib_path = os.path.join(sdk_dir, 'libs', 'libiminect.so')
