@@ -106,45 +106,44 @@ class ImiCamera:
                 continue
         return available_cameras
 
-def __init__(self, lib_path: Optional[str] = None, color_index: Optional[int] = None):
-    """Initialize camera interface
+    def __init__(self, lib_path: Optional[str] = None, color_index: Optional[int] = None):
+        """Initialize camera interface
+        
+        Args:
+            lib_path: Optional path to IMI SDK library
+            color_index: OpenCV camera index for color stream. If None, will auto-detect.
+        """
+        self.imi_lib_path = lib_path if lib_path is not None else os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+            'libs', 
+            'libiminect.so'
+        )
     
-    Args:
-        lib_path: Optional path to IMI SDK library
-        color_index: OpenCV camera index for color stream. If None, will auto-detect.
-    """
-    # Fix the lib_path assignment
-    self.imi_lib_path = lib_path if lib_path is not None else os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-        'libs', 
-        'libiminect.so'
-    )
-    
-    if not os.path.exists(self.imi_lib_path):
-        raise RuntimeError(f"IMI SDK library not found at {self.imi_lib_path}")
+        if not os.path.exists(self.imi_lib_path):
+            raise RuntimeError(f"IMI SDK library not found at {self.imi_lib_path}")
+                
+            self.lib = CDLL(self.imi_lib_path)
+            self._setup_functions()
             
-        self.lib = CDLL(self.imi_lib_path)
-        self._setup_functions()
-        
-        self.device = None
-        self.streams = {}
-        self.intrinsics = {}
-        
-        # Auto-detect color camera if index not specified
-        if color_index is None:
-            cameras = self.list_available_cameras()
-            working_cameras = [cam for cam in cameras if cam['working']]
-            if working_cameras:
-                self.color_index = working_cameras[0]['index']
-                print(f"Auto-detected color camera at index {self.color_index}")
+            self.device = None
+            self.streams = {}
+            self.intrinsics = {}
+            
+            # Auto-detect color camera if index not specified
+            if color_index is None:
+                cameras = self.list_available_cameras()
+                working_cameras = [cam for cam in cameras if cam['working']]
+                if working_cameras:
+                    self.color_index = working_cameras[0]['index']
+                    print(f"Auto-detected color camera at index {self.color_index}")
+                else:
+                    self.color_index = 2  # Default fallback
+                    print("No working cameras detected, defaulting to index 2")
             else:
-                self.color_index = 2  # Default fallback
-                print("No working cameras detected, defaulting to index 2")
-        else:
-            self.color_index = color_index
-        
-        self.color_cap = None
-        self.frame_count = 0
+                self.color_index = color_index
+            
+            self.color_cap = None
+            self.frame_count = 0
 
     def _setup_functions(self):
         """Setup C function interfaces from SDK"""
